@@ -24,9 +24,9 @@ Extensions add custom UI to the nest workspace — dashboard panels, toolbar but
 
 3. Write your entry script:
    ```js
-   import { nest } from '/nest-sdk.js';
+   // nest is a global provided by /nest-sdk.js (loaded automatically)
 
-   const div = document.createElement('div');
+   var div = document.createElement('div');
    div.style.padding = '1rem';
    div.innerHTML = '<h3>👋 Hello from an extension!</h3>';
    document.body.appendChild(div);
@@ -75,15 +75,16 @@ An extension can declare multiple slots. Each slot creates its own sandboxed ifr
 
 ## Extension SDK
 
-Extensions import the SDK from `/nest-sdk.js`. It provides a Promise-based API over `postMessage`:
+The host automatically loads `/nest-sdk.js` before your extension script. It provides a global `nest` object with a Promise-based API over `postMessage`:
 
 ```js
-import { nest } from '/nest-sdk.js';
+// nest is available as a global — no import needed
+nest.fetch('/api/status').then(console.log);
 ```
 
 ### `nest.fetch(url, init?)`
 
-Proxied fetch through the host. The host adds auth credentials — the extension never sees the token.
+Proxied fetch through the host. The host adds auth credentials — the extension never sees the token. **Only `/api/` paths are allowed** — requests to other URLs are rejected.
 
 ```js
 const result = await nest.fetch('/api/status');
@@ -108,7 +109,7 @@ await nest.writeFile('vault', 'notes.md', 'Updated content');
 
 ### `nest.state.get(key)` / `nest.state.set(key, value)`
 
-Persistent key-value state, stored by the host on the extension's behalf. Extensions in sandboxed iframes can't access `localStorage` directly.
+Persistent key-value state, stored by the host on the extension's behalf. State is **scoped per extension** — each extension has its own isolated namespace. Extensions in sandboxed iframes can't access `localStorage` directly.
 
 ```js
 await nest.state.set('lastRun', Date.now());
@@ -156,7 +157,12 @@ Each extension runs in an `<iframe sandbox="allow-scripts">` **without** `allow-
 - **No access to sessionStorage/localStorage** — opaque origin gets its own empty storage
 - **No access to auth tokens** — API calls are proxied through the host bridge
 
-All communication happens through `postMessage`. The host-side `ExtensionBridge` validates every message and proxies API calls with proper authentication.
+All communication happens through `postMessage`. The host-side `ExtensionBridge` validates every message and proxies API calls with proper authentication. The bridge only responds to messages from **registered extension iframes** — messages from other windows are silently ignored.
+
+Additional protections:
+- **Fetch restricted to `/api/` paths** — extensions cannot proxy requests to arbitrary external URLs
+- **State scoped per extension** — each extension's key-value state is isolated by extension ID
+- **30-second request timeout** — SDK requests that receive no reply are automatically rejected
 
 ### Message Protocol
 
@@ -181,7 +187,7 @@ See `examples/extensions/hello-world/` for a minimal working extension with a da
 ## Tips
 
 - **Extensions own their document.** There's no `render(container)` callback — you write directly to `document.body`. Use vanilla JS, Preact, Lit, or anything that runs in a browser.
-- **No build step required.** Extensions are served as plain ES modules.
+- **No build step required.** Extensions are served as plain scripts. The `nest` object is a global — no `import` statement needed.
 - **Auto-sizing.** Call `nest.resize()` after rendering or when content changes. The host sets `defaultHeight` from the manifest as the initial size.
 - **Error isolation.** Each extension loads in its own iframe. A broken extension can't crash others or the host.
 - **Refresh to reload.** Extensions load at page startup. Edit files, refresh the page.

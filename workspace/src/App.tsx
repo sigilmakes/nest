@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import Auth from './components/Auth';
 import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
-import { ExtensionRegistry, ExtensionBridge, ExtensionRegistryContext } from './extensions';
+import { ExtensionRegistry, ExtensionBridge, ExtensionRegistryContext, ExtensionBridgeContext } from './extensions';
 
 export default function App() {
     const [authenticated, setAuthenticated] = useState(false);
@@ -23,12 +23,14 @@ export default function App() {
 
     return (
         <ErrorBoundary>
-            <ExtensionRegistryContext.Provider value={registry}>
-                {authenticated
-                    ? <Layout />
-                    : <Auth onAuthenticated={() => setAuthenticated(true)} />
-                }
-            </ExtensionRegistryContext.Provider>
+            <ExtensionBridgeContext.Provider value={bridge}>
+                <ExtensionRegistryContext.Provider value={registry}>
+                    {authenticated
+                        ? <Layout />
+                        : <Auth onAuthenticated={() => setAuthenticated(true)} />
+                    }
+                </ExtensionRegistryContext.Provider>
+            </ExtensionBridgeContext.Provider>
         </ErrorBoundary>
     );
 }

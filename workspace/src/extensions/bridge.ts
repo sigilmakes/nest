@@ -1,11 +1,17 @@
+import { createContext, useContext } from 'react';
 import type { NestMessage, NestReply } from './types';
 
 /**
  * ExtensionBridge handles postMessage from extension iframes.
  * It proxies API calls (with cookies) so extensions never see the auth token.
+ *
+ * Security:
+ * - Only responds to messages from registered extension iframes (frame registry)
+ * - State is scoped per extension ID to prevent cross-extension leakage
+ * - Fetch is restricted to same-origin /api/ paths to prevent open-proxy abuse
  */
 export class ExtensionBridge {
-    private stateStore = new Map<string, Map<string, unknown>>();
+    private frameRegistry = new Map<WindowProxy, string>(); // contentWindow -> extensionId
 
     constructor() {
         window.addEventListener('message', this.handleMessage);
@@ -13,6 +19,15 @@ export class ExtensionBridge {
 
     destroy(): void {
         window.removeEventListener('message', this.handleMessage);
+        this.frameRegistry.clear();
+    }
+
+    registerFrame(extensionId: string, contentWindow: WindowProxy): void {
+        this.frameRegistry.set(contentWindow, extensionId);
+    }
+
+    unregisterFrame(contentWindow: WindowProxy): void {
+        this.frameRegistry.delete(contentWindow);
     }
 
     private handleMessage = async (e: MessageEvent): Promise<void> => {
@@ -22,8 +37,12 @@ export class ExtensionBridge {
         const source = e.source as WindowProxy | null;
         if (!source) return;
 
+        // Only process messages from registered extension iframes
+        const extensionId = this.frameRegistry.get(source);
+        if (!extensionId) return;
+
         try {
-            const result = await this.dispatch(msg as NestMessage, source);
+            const result = await this.dispatch(msg as NestMessage, extensionId);
             const reply: NestReply = { type: 'nest-reply', id: msg.id, result };
             source.postMessage(reply, '*');
         } catch (err) {
@@ -32,12 +51,17 @@ export class ExtensionBridge {
         }
     };
 
-    private async dispatch(msg: NestMessage, _source: WindowProxy): Promise<unknown> {
+    private async dispatch(msg: NestMessage, extensionId: string): Promise<unknown> {
         if (msg.type === 'nest-resize') return; // handled by ExtensionFrame directly
 
         switch (msg.action) {
             case 'fetch': {
-                const res = await fetch(msg.args.url, {
+                const url = msg.args.url;
+                // Only allow same-origin API calls
+                if (!url.startsWith('/api/')) {
+                    throw new Error('Extensions can only fetch /api/ paths');
+                }
+                const res = await fetch(url, {
                     ...msg.args.init,
                     credentials: 'include',
                 });
@@ -67,14 +91,12 @@ export class ExtensionBridge {
                 return res.json();
             }
             case 'state.get': {
-                // State is scoped per extension via key prefix
-                // Extensions in sandboxed iframes can't access localStorage directly
-                const key = `nest-ext-state:${msg.args.key}`;
+                const key = `nest-ext-state:${extensionId}:${msg.args.key}`;
                 const raw = localStorage.getItem(key);
                 return raw ? JSON.parse(raw) : null;
             }
             case 'state.set': {
-                const key = `nest-ext-state:${msg.args.key}`;
+                const key = `nest-ext-state:${extensionId}:${msg.args.key}`;
                 localStorage.setItem(key, JSON.stringify(msg.args.value));
                 return null;
             }
@@ -82,4 +104,10 @@ export class ExtensionBridge {
                 throw new Error(`Unknown action: ${(msg as any).action}`);
         }
     }
+}
+
+// React context for bridge access from components (e.g. ExtensionFrame)
+export const ExtensionBridgeContext = createContext<ExtensionBridge | null>(null);
+export function useExtensionBridge(): ExtensionBridge | null {
+    return useContext(ExtensionBridgeContext);
 }

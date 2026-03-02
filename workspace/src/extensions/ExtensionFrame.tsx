@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState } from 'react';
+import { useExtensionBridge } from './bridge';
 import type { NestTheme } from './types';
 
 interface ExtensionFrameProps {
@@ -11,8 +12,9 @@ interface ExtensionFrameProps {
 export default function ExtensionFrame({ extensionId, entry, defaultHeight = 150, className }: ExtensionFrameProps) {
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const [height, setHeight] = useState(defaultHeight);
+    const bridge = useExtensionBridge();
 
-    // Build srcdoc with SDK + extension entry
+    // Build srcdoc with SDK + extension entry (classic scripts, not ES modules)
     const srcdoc = `<!DOCTYPE html>
 <html>
 <head>
@@ -21,12 +23,26 @@ export default function ExtensionFrame({ extensionId, entry, defaultHeight = 150
     <style>body { margin: 0; font-family: system-ui, sans-serif; }</style>
 </head>
 <body>
-    <script type="module">
-        import '/nest-sdk.js';
-        import '/api/extensions/${extensionId}/${entry}';
-    </script>
+    <script src="/nest-sdk.js"><\/script>
+    <script src="/api/extensions/${extensionId}/${entry}"><\/script>
 </body>
 </html>`;
+
+    // Register/unregister iframe with bridge for message routing
+    useEffect(() => {
+        const iframe = iframeRef.current;
+        if (!iframe || !bridge) return;
+        const onLoad = () => {
+            if (iframe.contentWindow) {
+                bridge.registerFrame(extensionId, iframe.contentWindow);
+            }
+        };
+        iframe.addEventListener('load', onLoad);
+        return () => {
+            iframe.removeEventListener('load', onLoad);
+            if (iframe.contentWindow) bridge.unregisterFrame(iframe.contentWindow);
+        };
+    }, [bridge, extensionId]);
 
     // Listen for resize messages from this iframe
     useEffect(() => {

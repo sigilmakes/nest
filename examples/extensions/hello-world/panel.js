@@ -1,6 +1,6 @@
-import { nest } from '/nest-sdk.js';
+// Uses the global `nest` object from /nest-sdk.js (loaded via <script> tag)
 
-const div = document.createElement('div');
+var div = document.createElement('div');
 div.style.padding = '1rem';
 div.style.textAlign = 'center';
 div.style.fontFamily = 'system-ui, sans-serif';
