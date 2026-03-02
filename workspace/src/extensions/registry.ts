@@ -1,160 +1,73 @@
-import type {
-    Disposable,
-    DashboardPanelConfig,
-    ToolbarButtonConfig,
-    SidebarSectionConfig,
-    ViewConfig,
-    FileViewerConfig,
-    FileActionConfig,
-} from "./types";
+import type { ExtensionManifest, ExtensionSlotConfig, RegisteredExtension } from './types';
 
 export class ExtensionRegistry extends EventTarget {
-    private panels = new Map<string, DashboardPanelConfig>();
-    private buttons = new Map<string, ToolbarButtonConfig>();
-    private sections = new Map<string, SidebarSectionConfig>();
-    private views = new Map<string, ViewConfig>();
-    private viewers = new Map<string, FileViewerConfig>();
-    private actions = new Map<string, FileActionConfig>();
-    private _removedPanels = new Set<string>();
-    private styles = new Map<string, HTMLStyleElement>();
-    private navigateCallback: ((viewId: string) => void) | null = null;
+    private extensions = new Map<string, RegisteredExtension>();
 
     private emit(): void {
-        this.dispatchEvent(new Event("change"));
+        this.dispatchEvent(new Event('change'));
     }
 
-    // ── Dashboard ───────────────────────────────────────────
-
-    addDashboardPanel(config: DashboardPanelConfig): Disposable {
-        this.panels.set(config.id, config);
-        this.emit();
-        return { dispose: () => { this.panels.delete(config.id); this.emit(); } };
-    }
-
-    getDashboardPanels(): DashboardPanelConfig[] {
-        return [...this.panels.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
-    }
-
-    removePanel(id: string): void {
-        this._removedPanels.add(id);
+    /** Register an extension from its manifest */
+    register(manifest: ExtensionManifest): void {
+        this.extensions.set(manifest.id, { manifest });
         this.emit();
     }
 
-    restorePanel(id: string): void {
-        this._removedPanels.delete(id);
+    /** Unregister an extension */
+    unregister(id: string): void {
+        this.extensions.delete(id);
         this.emit();
     }
 
-    get removedPanels(): ReadonlySet<string> {
-        return this._removedPanels;
+    /** Get all registered extensions */
+    getAll(): RegisteredExtension[] {
+        return [...this.extensions.values()];
     }
 
-    // ── Toolbar ─────────────────────────────────────────────
-
-    addToolbarButton(config: ToolbarButtonConfig): Disposable {
-        this.buttons.set(config.id, config);
-        this.emit();
-        return { dispose: () => { this.buttons.delete(config.id); this.emit(); } };
+    /** Get extension by ID */
+    get(id: string): RegisteredExtension | undefined {
+        return this.extensions.get(id);
     }
 
-    getToolbarButtons(): ToolbarButtonConfig[] {
-        return [...this.buttons.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
-    }
-
-    // ── Sidebar ─────────────────────────────────────────────
-
-    addSidebarSection(config: SidebarSectionConfig): Disposable {
-        this.sections.set(config.id, config);
-        this.emit();
-        return { dispose: () => { this.sections.delete(config.id); this.emit(); } };
-    }
-
-    getSidebarSections(): SidebarSectionConfig[] {
-        return [...this.sections.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
-    }
-
-    // ── Views ───────────────────────────────────────────────
-
-    registerView(config: ViewConfig): Disposable {
-        this.views.set(config.id, config);
-        this.emit();
-        return { dispose: () => { this.views.delete(config.id); this.emit(); } };
-    }
-
-    getViews(): ViewConfig[] {
-        return [...this.views.values()];
-    }
-
-    getView(id: string): ViewConfig | undefined {
-        return this.views.get(id);
-    }
-
-    // ── File Viewers ────────────────────────────────────────
-
-    registerFileViewer(config: FileViewerConfig): Disposable {
-        this.viewers.set(config.id, config);
-        this.emit();
-        return { dispose: () => { this.viewers.delete(config.id); this.emit(); } };
-    }
-
-    getFileViewer(path: string): FileViewerConfig | null {
-        const ext = path.lastIndexOf(".") >= 0 ? path.slice(path.lastIndexOf(".")).toLowerCase() : "";
-        for (const viewer of this.viewers.values()) {
-            if (viewer.extensions && viewer.extensions.includes(ext)) return viewer;
-            if (viewer.match && viewer.match(path)) return viewer;
+    /** Get all slots of a given type across all extensions */
+    getSlots(type: ExtensionSlotConfig['type']): Array<{ extensionId: string; slot: ExtensionSlotConfig }> {
+        const result: Array<{ extensionId: string; slot: ExtensionSlotConfig }> = [];
+        for (const ext of this.extensions.values()) {
+            for (const slot of ext.manifest.slots) {
+                if (slot.type === type) {
+                    result.push({ extensionId: ext.manifest.id, slot });
+                }
+            }
         }
-        return null;
+        return result;
     }
 
-    // ── File Actions ────────────────────────────────────────
+    /** Load extensions from server and register them */
+    async loadFromServer(): Promise<void> {
+        try {
+            const res = await fetch('/api/extensions', { credentials: 'include' });
+            if (!res.ok) {
+                console.warn('[extensions] Failed to fetch extension list:', res.status);
+                return;
+            }
+            const data = await res.json();
+            const manifests: ExtensionManifest[] = data.extensions ?? [];
 
-    registerFileAction(config: FileActionConfig): Disposable {
-        this.actions.set(config.id, config);
-        this.emit();
-        return { dispose: () => { this.actions.delete(config.id); this.emit(); } };
-    }
+            if (manifests.length === 0) {
+                console.log('[extensions] No extensions found');
+                return;
+            }
 
-    getFileActions(path: string): FileActionConfig[] {
-        if (!path) return [];
-        return [...this.actions.values()].filter(
-            (a) => !a.filter || a.filter(path)
-        );
-    }
-
-    // ── Styles ──────────────────────────────────────────────
-
-    injectStyle(id: string, css: string): Disposable {
-        // Remove existing style with same id
-        const existing = this.styles.get(id);
-        if (existing) existing.remove();
-
-        const el = document.createElement("style");
-        el.dataset.extensionId = id;
-        el.textContent = css;
-        document.head.appendChild(el);
-        this.styles.set(id, el);
-
-        return {
-            dispose: () => {
-                el.remove();
-                this.styles.delete(id);
-            },
-        };
-    }
-
-    // ── Navigation ───────────────────────────────────────────
-
-    setNavigateCallback(cb: (viewId: string) => void): void {
-        this.navigateCallback = cb;
-    }
-
-    navigate(viewId: string): void {
-        if (this.navigateCallback) this.navigateCallback(viewId);
-    }
-
-    // ── Events ──────────────────────────────────────────────
-
-    emitEvent(name: string, detail?: unknown): void {
-        this.dispatchEvent(new CustomEvent(name, { detail }));
+            console.log(`[extensions] Registering ${manifests.length} extension(s)`);
+            for (const manifest of manifests) {
+                // Convert old single-entry manifest to slots format if needed
+                if (!manifest.slots && (manifest as any).entry) {
+                    manifest.slots = [{ type: 'dashboard', entry: (manifest as any).entry }];
+                }
+                this.register(manifest);
+            }
+        } catch (err) {
+            console.warn('[extensions] Failed to load extensions:', err);
+        }
     }
 }
