@@ -63,8 +63,8 @@ const WEBHOOK_RATE_MAX = 10;
 const WEBHOOK_GLOBAL_RATE_MAX = 30;
 const WEBHOOK_GLOBAL_BUCKET = "__global__";
 
-const AUTH_RATE_WINDOW_MS = 60_000;
-const AUTH_RATE_MAX = 10;
+const AUTH_RATE_WINDOW_MS = 300_000;
+const AUTH_RATE_MAX = 5;
 
 const MAX_BODY_SIZE = 1_048_576; // 1MB
 
@@ -654,6 +654,15 @@ export class HttpServer {
                 return;
             }
 
+            // Enforce config allowlist — immutable sections cannot be modified via API
+            const immutableSections = new Set(["server", "security", "token", "files"]);
+            for (const key of Object.keys(body)) {
+                if (immutableSections.has(key)) {
+                    this.json(res, 403, { error: `Cannot modify ${key} via API` });
+                    return;
+                }
+            }
+
             try {
                 const current = this.configWatcher.getCurrentConfig();
                 const merged = mergeConfig(current, body);
@@ -770,10 +779,20 @@ export class HttpServer {
     }
 
     private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+        const startTime = Date.now();
+        let authResult: 'ok' | 'failed' | 'none' = 'none';
+
         this.setSecurityHeaders(res);
 
         const url = new URL(req.url ?? "/", `http://localhost`);
         const pathname = url.pathname;
+
+        // Set up access logging for API routes (fires after response is sent)
+        if (pathname.startsWith("/api/") || pathname === "/attach") {
+            res.on('finish', () => {
+                this.logAccess(req, res, authResult, startTime);
+            });
+        }
 
         // Health endpoint — no auth required
         if (pathname === "/health" && (req.method ?? "GET") === "GET") {
@@ -799,10 +818,17 @@ export class HttpServer {
         // API and attach routes require auth (except login endpoint)
         if ((pathname.startsWith("/api/") || pathname === "/attach") && pathname !== "/api/auth/login") {
             if (!this.authenticate(req)) {
+                authResult = 'failed';
                 this.recordAuthFailure(clientIp);
+                // Exponential backoff after 3 failures in current window
+                const failures = this.getAuthFailureCount(clientIp);
+                if (failures > 3) {
+                    await new Promise(r => setTimeout(r, Math.min(2 ** (failures - 3) * 1000, 30_000)));
+                }
                 this.json(res, 401, { error: "Unauthorized" });
                 return;
             }
+            authResult = 'ok';
         }
 
         // Set CORS headers on all responses if configured
@@ -870,12 +896,12 @@ export class HttpServer {
             return;
         }
 
-        // If Authorization header is present, authenticate immediately (TUI/programmatic clients)
-        const headerAuth = this.authenticate(req);
+        // Authenticate via session cookie or Authorization header
+        const preAuth = this.authenticate(req);
 
         this.wss.handleUpgrade(req, socket, head, (ws) => {
             const clientId = `ws-${++this.wsClientCounter}`;
-            let authenticated = headerAuth;
+            let authenticated = preAuth;
 
             // Keep-alive: ping every 30s so proxies/NAT don't drop idle connections.
             // The ws package handles pong responses automatically.
@@ -895,7 +921,7 @@ export class HttpServer {
             } else {
                 // Already authenticated via header — add to clients immediately
                 this.wsClients.set(clientId, ws);
-                logger.info("WebSocket client connected at /attach (header auth)", { clientId });
+                logger.info("WebSocket client connected at /attach (pre-authenticated)", { clientId });
             }
 
             ws.on("message", async (rawData) => {
@@ -1134,11 +1160,33 @@ export class HttpServer {
         return recent.length >= AUTH_RATE_MAX;
     }
 
+    private getAuthFailureCount(ip: string): number {
+        const timestamps = this.authRateLimits.get(ip);
+        if (!timestamps) return 0;
+        const now = Date.now();
+        return timestamps.filter(t => now - t < AUTH_RATE_WINDOW_MS).length;
+    }
+
     private setCorsHeaders(res: ServerResponse): void {
         if (!this.config.cors) return;
         res.setHeader("Access-Control-Allow-Origin", this.config.cors.origin);
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
         res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    }
+
+    private logAccess(req: IncomingMessage, res: ServerResponse, authResult: 'ok' | 'failed' | 'none', startTime: number): void {
+        const durationMs = Date.now() - startTime;
+        const ip = this.getClientIp(req);
+        const method = req.method ?? "GET";
+        const url = new URL(req.url ?? "/", "http://localhost");
+        const path = url.pathname;
+        const status = res.statusCode;
+
+        logger.info("access", { ip, method, path, status, auth: authResult, durationMs });
+
+        if (authResult === "failed") {
+            logger.warn("auth_failed", { ip, method, path, reason: "invalid credentials" });
+        }
     }
 
     private json(res: ServerResponse, status: number, body: unknown): void {
