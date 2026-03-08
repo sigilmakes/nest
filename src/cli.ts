@@ -291,7 +291,7 @@ async function cmdAttach(args: ParsedArgs): Promise<void> {
 
         if (msg.type === "auth_ok") {
             import("./attach-tui.js").then(({ startTui }) => {
-                startTui(ws, workspace.name ?? "nest");
+                startTui(ws, workspace.name ?? "nest", wsUrl);
             });
         } else if (msg.type === "auth_fail") {
             console.error("Authentication failed");

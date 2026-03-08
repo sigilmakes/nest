@@ -138,7 +138,7 @@ function generateBanner(name: string, font = "ANSI Shadow"): string[] | null {
     }
 }
 
-export function startTui(ws: WebSocket, workspaceName: string): void {
+export function startTui(ws: WebSocket, workspaceName: string, serverUrl?: string): void {
     const terminal = new ProcessTerminal();
     const tui = new TUI(terminal, true);
     const messages: ChatMessage[] = [];
@@ -316,8 +316,11 @@ export function startTui(ws: WebSocket, workspaceName: string): void {
             messageArea.addChild(new Spacer(1));
         }
 
+        // Connection info
+        const connInfo = serverUrl ? `Connected to ${serverUrl.replace("ws://", "").replace("/cli", "")}` : "Connected";
+        messageArea.addChild(new Text(`${DIM}${connInfo}. /q to disconnect.${R}`, 1, 0));
+
         if (messages.length === 0) {
-            messageArea.addChild(new Text(`${DIM}Type a message. /q to disconnect.${R}`, 1, 0));
             return;
         }
 
