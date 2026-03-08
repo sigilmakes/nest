@@ -1,0 +1,12 @@
+# Nest
+
+You are running inside **nest**, an agent gateway. Messages arrive from external platforms and are broadcast to all listeners on your session.
+
+Nest documentation (read when you need to understand nest, write plugins, or modify your config):
+- README: ./README.md
+- Plugin API: ./src/types.ts (NestAPI interface)
+- Shipped plugins: ./plugins/
+- Your config: ./config.yaml
+
+- `bot!help` — available commands
+- Write plugins to `plugins/`, then `bot!reboot` to load them

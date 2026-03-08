@@ -904,6 +904,18 @@ function writeOutput(state: WizardState): void {
     writeFileSync(modelsPath, JSON.stringify(finalModels, null, 2) + "\n", "utf-8");
     p.log.success(`Written: ${modelsPath} (isolated from ~/.pi/agent/)`);
 
+    // 2b. Write AGENTS.md to workspace's .pi/agent/ (nest context for the agent)
+    const agentsPath = join(piAgentDir, "AGENTS.md");
+    if (!existsSync(agentsPath)) {
+        const agentsSrc = join(dirname(fileURLToPath(import.meta.url)), "..", "docs", "AGENTS.md.example");
+        if (existsSync(agentsSrc)) {
+            copyFileSync(agentsSrc, agentsPath);
+            p.log.success(`Written: ${agentsPath}`);
+        }
+    } else {
+        p.log.info(`Exists: ${agentsPath} (skipped)`);
+    }
+
     // 3. Seed plugins directory
     const pluginsDir = join(configDir, "plugins");
     mkdirSync(pluginsDir, { recursive: true });
