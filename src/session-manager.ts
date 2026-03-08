@@ -30,12 +30,14 @@ export class SessionManager extends EventEmitter {
     private defaultSession: string;
     private bridgeFactory: (opts: BridgeOptions) => Bridge;
     private instanceAgentDir?: string;
+    private config: Config;
 
     constructor(config: Config, bridgeFactory?: (opts: BridgeOptions) => Bridge) {
         super();
         this.bridgeFactory = bridgeFactory ?? ((opts) => new Bridge(opts));
         this.defaultSession = config.defaultSession;
         this.instanceAgentDir = config.instance?.agentDir;
+        this.config = config;
 
         for (const [name, sessionConfig] of Object.entries(config.sessions)) {
             this.sessions.set(name, {
@@ -103,10 +105,21 @@ export class SessionManager extends EventEmitter {
 
         let bridge: Bridge;
         try {
+            // Pass NEST_URL and SERVER_TOKEN so pi extensions can reach the kernel
+            const bridgeEnv: Record<string, string> = {};
+            if (this.config.server?.port) {
+                const host = this.config.server.host ?? "127.0.0.1";
+                bridgeEnv.NEST_URL = `http://${host}:${this.config.server.port}`;
+            }
+            if (this.config.server?.token) {
+                bridgeEnv.SERVER_TOKEN = this.config.server.token;
+            }
+
             bridge = this.bridgeFactory({
                 cwd: info.config.pi.cwd,
                 command: info.config.pi.command,
                 args,
+                env: Object.keys(bridgeEnv).length > 0 ? bridgeEnv : undefined,
             });
             info.bridge = bridge;
             info.state = "running";

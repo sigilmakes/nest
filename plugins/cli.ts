@@ -29,12 +29,18 @@ interface CliClient {
     username: string;
 }
 
+interface PendingPrompt {
+    resolve: (result: { value: unknown } | { cancelled: true }) => void;
+    reject: (err: Error) => void;
+}
+
 class CliListener implements Listener {
     readonly name = "cli";
     private wss: WebSocketServer;
     private clients = new Map<string, CliClient>();
     private activeClient: CliClient | null = null;  // most recent client
     private messageHandler?: (msg: IncomingMessage) => void;
+    private pendingPrompts = new Map<string, PendingPrompt>();
     private token: string;
     private nest: NestAPI;
 
@@ -106,6 +112,39 @@ class CliListener implements Listener {
         }
     }
 
+    async sendPrompt(origin: MessageOrigin, block: Block, timeoutMs: number): Promise<{ value: unknown } | { cancelled: true }> {
+        return new Promise((resolve, reject) => {
+            this.pendingPrompts.set(block.id, { resolve, reject });
+
+            // Send prompt to all authenticated clients
+            for (const client of this.clients.values()) {
+                if (client.authenticated && client.ws.readyState === WebSocket.OPEN) {
+                    this.wsSend(client.ws, {
+                        type: "prompt",
+                        id: block.id,
+                        kind: block.kind,
+                        data: block.data,
+                        fallback: block.fallback,
+                    });
+                }
+            }
+
+            // Timeout — cancel the prompt
+            setTimeout(() => {
+                if (this.pendingPrompts.has(block.id)) {
+                    this.pendingPrompts.delete(block.id);
+                    // Tell TUI to dismiss the prompt
+                    for (const client of this.clients.values()) {
+                        if (client.authenticated && client.ws.readyState === WebSocket.OPEN) {
+                            this.wsSend(client.ws, { type: "prompt_cancel", id: block.id });
+                        }
+                    }
+                    reject(new Error("timeout"));
+                }
+            }, timeoutMs);
+        });
+    }
+
     async sendTyping(origin: MessageOrigin): Promise<void> {
         for (const client of this.clients.values()) {
             if (!client.authenticated || client.ws.readyState !== WebSocket.OPEN) continue;
@@ -161,7 +200,17 @@ class CliListener implements Listener {
                     return;
                 }
 
-                if (msg.type === "message" && typeof msg.text === "string" && msg.text.trim()) {
+                if (msg.type === "response" && typeof msg.id === "string") {
+                    const pending = this.pendingPrompts.get(msg.id);
+                    if (pending) {
+                        this.pendingPrompts.delete(msg.id);
+                        if (msg.cancelled) {
+                            pending.resolve({ cancelled: true });
+                        } else {
+                            pending.resolve({ value: msg.value });
+                        }
+                    }
+                } else if (msg.type === "message" && typeof msg.text === "string" && msg.text.trim()) {
                     this.messageHandler?.({
                         platform: "cli",
                         channel: "terminal",

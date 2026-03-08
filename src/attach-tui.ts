@@ -176,6 +176,105 @@ export function startTui(ws: WebSocket, workspaceName: string): void {
     // Track streaming text — the kernel sends intermediate text chunks and a final response
     let lastResponseIdx = -1;
 
+    // ─── Prompt Overlay ─────────────────────────────────────
+
+    let activePrompt: { id: string; cleanup: () => void } | null = null;
+
+    function sendWsResponse(id: string, value: unknown): void {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "response", id, value }));
+        }
+    }
+
+    function sendWsCancel(id: string): void {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "response", id, cancelled: true }));
+        }
+    }
+
+    function dismissActivePrompt(): void {
+        if (!activePrompt) return;
+        activePrompt.cleanup();
+        activePrompt = null;
+        tui.setFocus(editor);
+        tui.requestRender();
+    }
+
+    function cancelActivePrompt(id: string): void {
+        if (!activePrompt || activePrompt.id !== id) return;
+        dismissActivePrompt();
+    }
+
+    function handlePrompt(msg: { id: string; kind: string; data: any; fallback: string }): void {
+        // Dismiss any existing prompt
+        if (activePrompt) dismissActivePrompt();
+
+        const container = new Box(1, 1, (s) => `${BG_GRAY}${s}${R}`);
+
+        switch (msg.kind) {
+            case "confirm": {
+                container.addChild(new Text(`${BOLD}${msg.data.text}${R}`, 0, 0));
+                container.addChild(new Spacer(1));
+                container.addChild(new Text(`${DIM}[y]es  [n]o  [esc] cancel${R}`, 0, 0));
+                const overlay = tui.showOverlay(container, {
+                    anchor: "bottom-center", offsetY: -3, width: "60%",
+                });
+                const removeListener = tui.addInputListener((data) => {
+                    const ch = data.toLowerCase();
+                    if (ch === "y") { sendWsResponse(msg.id, true); overlay.hide(); dismissActivePrompt(); return { consume: true }; }
+                    if (ch === "n") { sendWsResponse(msg.id, false); overlay.hide(); dismissActivePrompt(); return { consume: true }; }
+                    if (matchesKey(data, Key.escape)) { sendWsCancel(msg.id); overlay.hide(); dismissActivePrompt(); return { consume: true }; }
+                    return { consume: true }; // consume all input while prompt is active
+                });
+                activePrompt = { id: msg.id, cleanup: () => { overlay.hide(); removeListener(); } };
+                break;
+            }
+
+            case "select": {
+                container.addChild(new Text(`${BOLD}${msg.data.text}${R}`, 0, 0));
+                container.addChild(new Spacer(1));
+                const items = (msg.data.items ?? []).map((i: any) => ({
+                    value: i.value, label: i.label, description: i.description,
+                }));
+                const list = new SelectList(items, msg.data.maxVisible ?? 8, editorTheme.selectList as SelectListTheme);
+                const overlay = tui.showOverlay(container, {
+                    anchor: "bottom-center", offsetY: -3, width: "60%", maxHeight: "40%",
+                });
+                list.onSelect = (item) => { sendWsResponse(msg.id, item.value); overlay.hide(); dismissActivePrompt(); };
+                list.onCancel = () => { sendWsCancel(msg.id); overlay.hide(); dismissActivePrompt(); };
+                container.addChild(list);
+                tui.setFocus(list as any);
+                activePrompt = { id: msg.id, cleanup: () => { overlay.hide(); } };
+                break;
+            }
+
+            case "input": {
+                container.addChild(new Text(`${BOLD}${msg.data.text}${R}`, 0, 0));
+                container.addChild(new Spacer(1));
+                const input = new Input();
+                if (msg.data.placeholder) input.setValue(msg.data.placeholder);
+                const overlay = tui.showOverlay(container, {
+                    anchor: "bottom-center", offsetY: -3, width: "60%",
+                });
+                input.onSubmit = (value) => { sendWsResponse(msg.id, value); overlay.hide(); dismissActivePrompt(); };
+                input.onEscape = () => { sendWsCancel(msg.id); overlay.hide(); dismissActivePrompt(); };
+                container.addChild(input);
+                tui.setFocus(input);
+                activePrompt = { id: msg.id, cleanup: () => { overlay.hide(); } };
+                break;
+            }
+
+            default: {
+                // Unknown prompt kind — show fallback, immediately cancel
+                addMessage({ type: "system", text: msg.fallback });
+                sendWsCancel(msg.id);
+                return;
+            }
+        }
+
+        tui.requestRender();
+    }
+
     function addMessage(msg: ChatMessage): void {
         // Non-response messages break the streaming sequence
         if (msg.type !== "response") {
@@ -341,6 +440,12 @@ export function startTui(ws: WebSocket, workspaceName: string): void {
                 }
                 break;
             }
+            case "prompt":
+                handlePrompt(msg);
+                break;
+            case "prompt_cancel":
+                cancelActivePrompt(msg.id);
+                break;
         }
     });
 
