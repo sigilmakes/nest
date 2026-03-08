@@ -56,12 +56,8 @@ export function registerWorkspace(name: string, path: string): void {
 }
 
 function resolveWorkspace(nameOrPath?: string): { path: string; name?: string } | null {
-    // No argument: try CWD
     if (!nameOrPath) {
-        if (existsSync(join(process.cwd(), "config.yaml"))) {
-            return { path: process.cwd() };
-        }
-        // Try default workspace
+        // Try default workspace from registry
         const registry = loadRegistry();
         if (registry.default) {
             const p = registry.workspaces[registry.default];
@@ -69,20 +65,38 @@ function resolveWorkspace(nameOrPath?: string): { path: string; name?: string } 
                 return { path: p, name: registry.default };
             }
         }
+        // Fallback: try ~/.nest/<name> for single-workspace setups
+        const nestHome = join(homedir(), ".nest");
+        if (existsSync(nestHome)) {
+            try {
+                const dirs = readdirSync(nestHome).filter(
+                    (d) => existsSync(join(nestHome, d, "config.yaml")),
+                );
+                if (dirs.length === 1) {
+                    return { path: join(nestHome, dirs[0]), name: dirs[0] };
+                }
+            } catch {}
+        }
         return null;
     }
 
-    // Direct path
-    const asPath = resolve(nameOrPath);
-    if (existsSync(join(asPath, "config.yaml"))) {
-        return { path: asPath };
-    }
-
-    // Registry lookup
+    // Check registry first
     const registry = loadRegistry();
     const registered = registry.workspaces[nameOrPath];
     if (registered && existsSync(join(registered, "config.yaml"))) {
         return { path: registered, name: nameOrPath };
+    }
+
+    // Try as ~/.nest/<name>
+    const asNestDir = join(homedir(), ".nest", nameOrPath);
+    if (existsSync(join(asNestDir, "config.yaml"))) {
+        return { path: asNestDir, name: nameOrPath };
+    }
+
+    // Try as absolute/relative path
+    const asPath = resolve(nameOrPath);
+    if (existsSync(join(asPath, "config.yaml"))) {
+        return { path: asPath };
     }
 
     return null;
@@ -109,17 +123,23 @@ function printHelp(): void {
     -v, --version                        Show version
 
   Examples:
-    nest init                            Create workspace in current directory
-    nest init ~/bots/wren                Create workspace at path
-    nest start                           Start from current directory
+    nest init                            Create workspace (default: ~/.nest/<name>/)
+    nest init wren                       Create workspace with name hint
     nest -w wren start                   Start named workspace
-    nest attach -w wren                  Attach TUI to default session
-    nest attach -w wren -s background    Attach TUI to specific session
+    nest -w wren attach                  Attach TUI to default session
+    nest -w wren -s background attach    Attach TUI to specific session
 
   Workspaces:
-    A workspace is a directory containing config.yaml, plugins/, and .nest/.
-    \`nest init\` runs the full setup wizard and registers the workspace.
-    Named workspaces are stored in ~/.nest/workspaces.json.
+    A workspace is a self-contained directory:
+      ~/.nest/wren/
+      ├── config.yaml
+      ├── plugins/
+      ├── cron.d/
+      └── .pi/agent/    (models.json, sessions — isolated from ~/.pi/agent/)
+
+    \`nest init\` runs the full setup wizard. Default location is ~/.nest/<name>/
+    but you can choose any path. Registry at ~/.nest/workspaces.json maps
+    names to paths.
 `.trimEnd());
 }
 
@@ -186,18 +206,13 @@ function parseArgs(argv: string[]): ParsedArgs {
 // ─── Commands ───────────────────────────────────────────────
 
 async function cmdInit(args: ParsedArgs): Promise<void> {
-    const targetDir = args.rest[0] ? resolve(args.rest[0]) : process.cwd();
-    mkdirSync(targetDir, { recursive: true });
-    process.chdir(targetDir);
+    const nameHint = args.rest[0];
 
     const { runInitWizard } = await import("./init.js");
-    const result = await runInitWizard();
+    const result = await runInitWizard(nameHint);
 
     if (result) {
-        registerWorkspace(result.sessionName, targetDir);
-        console.log(`\n  Registered workspace "${result.sessionName}" → ${targetDir}`);
-        console.log(`  Start with:  nest -w ${result.sessionName} start`);
-        console.log(`  Attach with: nest -w ${result.sessionName} attach`);
+        registerWorkspace(result.instanceName, result.nestDir);
     }
 }
 

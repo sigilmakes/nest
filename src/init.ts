@@ -15,6 +15,7 @@ import * as p from "@clack/prompts";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync, readFileSync, copyFileSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 
@@ -291,8 +292,9 @@ function mergeModelsJson(
 // ─── config.yaml Builder ────────────────────────────────────
 
 interface WizardState {
-    workDir: string;
-    agentDir: string;
+    instanceName: string;
+    nestDir: string;        // ~/.nest/<name>/ — config, plugins, data all live here
+    workDir: string;        // pi's cwd (where the agent works)
     provider: Provider;
     apiKey?: string;
     customBaseUrl?: string;
@@ -319,10 +321,10 @@ function buildConfig(state: WizardState): Record<string, unknown> {
 
     // Instance
     config.instance = {
-        name: "nest",
+        name: state.instanceName,
         dataDir: ".",
         pluginsDir: "./plugins",
-        agentDir: state.agentDir,
+        agentDir: "./.pi/agent",
     };
 
     // Sessions
@@ -382,10 +384,39 @@ function buildConfig(state: WizardState): Record<string, unknown> {
 
 // ─── Wizard Steps ───────────────────────────────────────────
 
-async function stepWorkspace(): Promise<{ workDir: string; agentDir: string }> {
+async function stepInstance(hint?: string): Promise<{ instanceName: string; nestDir: string }> {
+    const defaultName = hint?.replace(/[^a-z0-9_-]/gi, "-").toLowerCase() ?? "default";
+    const instanceName = guard(
+        await p.text({
+            message: "Instance name",
+            initialValue: defaultName,
+            validate: (v = "") => {
+                if (!v.trim()) return "Required";
+                if (!/^[a-z0-9_-]+$/.test(v)) return "Lowercase alphanumeric, hyphens, underscores only";
+                return undefined;
+            },
+        }),
+    );
+
+    const defaultDir = join(homedir(), ".nest", instanceName);
+    const nestDir = guard(
+        await p.text({
+            message: "Workspace directory",
+            initialValue: defaultDir,
+            validate: (v = "") => {
+                if (!v.trim()) return "Required";
+                return undefined;
+            },
+        }),
+    );
+
+    return { instanceName, nestDir: resolve(nestDir) };
+}
+
+async function stepWorkDir(): Promise<string> {
     const cwd = guard(
         await p.text({
-            message: "Working directory for the agent",
+            message: "Working directory for the agent (pi's cwd)",
             initialValue: process.env.HOME ?? "/home",
             validate: (v = "") => {
                 if (!v.trim()) return "Required";
@@ -393,22 +424,7 @@ async function stepWorkspace(): Promise<{ workDir: string; agentDir: string }> {
             },
         }),
     );
-    const workDir = resolve(cwd);
-
-    // Nest gets its own agent dir — never touches ~/.pi/agent/
-    const defaultAgentDir = resolve(process.cwd(), ".nest");
-    const agentDir = guard(
-        await p.text({
-            message: "Nest agent directory (models, sessions, settings — separate from pi)",
-            initialValue: defaultAgentDir,
-            validate: (v = "") => {
-                if (!v.trim()) return "Required";
-                return undefined;
-            },
-        }),
-    );
-
-    return { workDir, agentDir: resolve(agentDir) };
+    return resolve(cwd);
 }
 
 async function stepProvider(): Promise<{
@@ -833,9 +849,10 @@ function writeOutput(state: WizardState): void {
     writeFileSync(configPath, configYaml, "utf-8");
     p.log.success(`${configExisted ? "Updated" : "Written"}: config.yaml`);
 
-    // 2. Write models.json to nest's own agent dir (doesn't touch ~/.pi/agent/)
-    mkdirSync(state.agentDir, { recursive: true });
-    const modelsPath = join(state.agentDir, "models.json");
+    // 2. Write models.json to workspace's .pi/agent/ (doesn't touch ~/.pi/agent/)
+    const piAgentDir = join(configDir, ".pi", "agent");
+    mkdirSync(piAgentDir, { recursive: true });
+    const modelsPath = join(piAgentDir, "models.json");
     const modelsJson = buildModelsJson(
         state.provider,
         state.apiKey,
@@ -899,19 +916,24 @@ function writeOutput(state: WizardState): void {
 // ─── Exported Wizard ────────────────────────────────────────
 
 export interface InitResult {
-    sessionName: string;
-    workDir: string;
-    agentDir: string;
+    instanceName: string;
+    nestDir: string;
 }
 
-export async function runInitWizard(): Promise<InitResult | null> {
+export async function runInitWizard(nameHint?: string): Promise<InitResult | null> {
     p.intro("🪺 nest init");
 
-    // Check for existing config
-    if (existsSync("config.yaml")) {
+    // Step 1: Instance name → derives ~/.nest/<name>/
+    p.log.step("Instance");
+    const { instanceName, nestDir } = await stepInstance(nameHint);
+
+    // Check for existing config in that workspace
+    mkdirSync(nestDir, { recursive: true });
+    const configPath = join(nestDir, "config.yaml");
+    if (existsSync(configPath)) {
         const overwrite = guard(
             await p.confirm({
-                message: "config.yaml already exists. Overwrite?",
+                message: `${configPath} already exists. Overwrite?`,
                 initialValue: false,
             }),
         );
@@ -921,34 +943,37 @@ export async function runInitWizard(): Promise<InitResult | null> {
         }
     }
 
-    // Step 1: Workspace
-    p.log.step("Workspace");
-    const { workDir, agentDir } = await stepWorkspace();
+    // Step 2: Working directory for pi
+    p.log.step("Agent Working Directory");
+    const workDir = await stepWorkDir();
 
-    // Step 2: Model provider
+    // Step 3: Model provider
     p.log.step("Model Provider");
     const { provider, apiKey, customBaseUrl, customModelId } = await stepProvider();
 
-    // Step 3: Session
+    // Step 4: Session
     p.log.step("Session");
     const session = await stepSession();
 
-    // Step 4: Listeners
+    // Step 5: Listeners
     p.log.step("Chat Platforms");
     const listeners = await stepListeners(session.name);
 
-    // Step 5: Server
+    // Step 6: Server
     p.log.step("HTTP Server");
     const server = await stepServer();
 
-    // Step 6: Cron
+    // Step 7: Cron
     p.log.step("Cron Scheduler");
     const cron = await stepCron();
 
-    // Build state and write output
+    // Write everything to ~/.nest/<name>/
+    process.chdir(nestDir);
+
     const state: WizardState = {
+        instanceName,
+        nestDir,
         workDir,
-        agentDir,
         provider,
         apiKey,
         customBaseUrl,
@@ -968,10 +993,12 @@ export async function runInitWizard(): Promise<InitResult | null> {
 
     // Summary
     const summaryLines = [
+        `Instance:  ${instanceName}`,
+        `Location:  ${nestDir}`,
         `Provider:  ${provider.name}`,
         `Session:   ${session.name}`,
-        `Workspace: ${workDir}`,
-        `Agent dir: ${agentDir}`,
+        `Agent cwd: ${workDir}`,
+        `Pi config: ${nestDir}/.pi/agent/`,
     ];
     if (listeners.enableDiscord) {
         summaryLines.push(`Discord:   ${Object.keys(listeners.discordChannels).length} channel(s)`);
@@ -988,11 +1015,7 @@ export async function runInitWizard(): Promise<InitResult | null> {
 
     p.note(summaryLines.join("\n"), "Setup complete");
 
-    p.outro("Start with: nest start");
+    p.outro(`Start with: nest -w ${instanceName} start`);
 
-    return {
-        sessionName: session.name,
-        workDir,
-        agentDir,
-    };
+    return { instanceName, nestDir };
 }
