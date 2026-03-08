@@ -130,6 +130,7 @@ export interface SandboxConfig {
     mounts?: string[];           // additional bind mounts (-v host:container[:opts])
     readOnly?: boolean;          // read-only root filesystem (--read-only)
     tmpfs?: string[];            // tmpfs mounts (e.g. ["/tmp:size=512m"])
+    nixStore?: string;            // nix store path on host (default: "~/.nest/nix/<name>")
 
     // Networking
     network?: string;            // docker network mode: "host", "none", "bridge", or network name

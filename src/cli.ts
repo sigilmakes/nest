@@ -17,10 +17,10 @@
  *   -v, --version                       Show version
  */
 
-import { resolve, join } from "node:path";
+import { dirname, resolve, join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 // ─── Workspace Registry ─────────────────────────────────────
 
@@ -157,7 +157,7 @@ function printVersion(): void {
 // ─── Arg Parsing ────────────────────────────────────────────
 
 interface ParsedArgs {
-    command: "init" | "start" | "attach" | "status" | "list" | "help" | "version";
+    command: "init" | "start" | "stop" | "build" | "rebuild" | "attach" | "status" | "list" | "help" | "version";
     workspace?: string;
     session?: string;
     config?: string;
@@ -179,6 +179,12 @@ function parseArgs(argv: string[]): ParsedArgs {
             command = "init";
         } else if (arg === "start") {
             command = "start";
+        } else if (arg === "stop") {
+            command = "stop";
+        } else if (arg === "build") {
+            command = "build";
+        } else if (arg === "rebuild") {
+            command = "rebuild";
         } else if (arg === "attach") {
             command = "attach";
         } else if (arg === "status") {
@@ -254,8 +260,9 @@ async function startSandboxed(
     console.log();
 
     const dockerArgs = [
-        "run", "--rm", "-it",
+        "run", "-d",
         "--name", containerName,
+        "--restart", "unless-stopped",
 
         // ── Workspace as HOME ──────────────────────────────
         // The workspace IS the agent's home directory.
@@ -264,6 +271,11 @@ async function startSandboxed(
         "-e", "HOME=/home/nest",
         "-e", "PI_CODING_AGENT_DIR=/home/nest/.pi/agent",
         "-w", "/home/nest",
+
+        // ── Persistent nix store ───────────────────────────
+        // Agent-installed nix packages survive container rebuilds.
+        // Defaults to ~/.nest/nix/<name>/ to avoid being a subfolder of the workspace mount.
+        "-v", `${resolve(sandbox.nixStore ?? join(homedir(), ".nest", "nix", config.instance?.name ?? "default"))}:/nix`,
 
         // ── Networking ─────────────────────────────────────
         `--network=${sandbox.network ?? "host"}`,
@@ -365,25 +377,158 @@ async function startSandboxed(
         dockerArgs.push(...sandbox.args);
     }
 
+    // ── Check for existing container ──────────────────────────
+    try {
+        const check = spawnSync("docker", ["inspect", "--format", "{{.State.Status}}", containerName], {
+            encoding: "utf-8",
+        });
+        if (check.status === 0) {
+            const status = check.stdout.trim();
+            if (status === "running") {
+                console.log(`Container "${containerName}" is already running.`);
+                console.log(`Use "nest stop -w ${ws.name ?? ws.path}" to stop it, or "nest attach" to connect.`);
+                process.exit(0);
+            }
+            // Remove stopped/dead container before re-creating
+            spawnSync("docker", ["rm", containerName]);
+        }
+    } catch { /* docker not found — will fail below */ }
+
     // ── Image & Command ────────────────────────────────────
     dockerArgs.push(image, "node", "dist/cli.js", "start", "--config", "/home/nest/config.yaml");
 
-    const docker = spawn("docker", dockerArgs, {
+    const result = spawnSync("docker", dockerArgs, { encoding: "utf-8" });
+
+    if (result.error) {
+        if ((result.error as NodeJS.ErrnoException).code === "ENOENT") {
+            console.error("Error: docker not found. Install Docker to use sandbox mode.");
+        } else {
+            console.error(`Error: ${result.error.message}`);
+        }
+        process.exit(1);
+    }
+
+    if (result.status !== 0) {
+        console.error(result.stderr);
+        process.exit(1);
+    }
+
+    console.log(`Container started: ${containerName}`);
+    console.log(`  Restart policy: unless-stopped (survives reboots)`);
+    console.log();
+    console.log(`  nest stop -w ${ws.name ?? "..."}     Stop the container`);
+    console.log(`  nest attach -w ${ws.name ?? "..."}   Attach TUI`);
+    console.log(`  docker logs -f ${containerName}      Follow logs`);
+}
+
+async function cmdStop(args: ParsedArgs): Promise<void> {
+    const ws = resolveWorkspace(args.workspace);
+    if (!ws) {
+        console.error(args.workspace
+            ? `Error: workspace "${args.workspace}" not found`
+            : "Error: no workspace found");
+        process.exit(1);
+    }
+
+    const { loadConfig } = await import("./config.js");
+    const configPath = join(ws.path, "config.yaml");
+    const config = loadConfig(configPath);
+
+    if (!config.instance?.sandbox?.enabled) {
+        console.error("Stop is for sandboxed workspaces. For bare-metal, use Ctrl+C or systemctl stop nest.");
+        process.exit(1);
+    }
+
+    const containerName = `nest-${config.instance?.name ?? "default"}`;
+    console.log(`Stopping container "${containerName}"...`);
+
+    const result = spawnSync("docker", ["stop", containerName], { stdio: "inherit" });
+    if (result.status === 0) {
+        spawnSync("docker", ["rm", containerName], { stdio: "inherit" });
+        console.log("Stopped.");
+    } else {
+        console.error(`Container "${containerName}" not found or already stopped.`);
+        process.exit(1);
+    }
+}
+
+async function cmdBuild(args: ParsedArgs): Promise<void> {
+    const ws = resolveWorkspace(args.workspace);
+    if (!ws) {
+        console.error(args.workspace
+            ? `Error: workspace "${args.workspace}" not found`
+            : "Error: no workspace found");
+        process.exit(1);
+    }
+
+    const { loadConfig } = await import("./config.js");
+    const configPath = join(ws.path, "config.yaml");
+    const config = loadConfig(configPath);
+
+    if (!config.instance?.sandbox?.enabled) {
+        console.error("Build is for sandboxed workspaces.");
+        process.exit(1);
+    }
+
+    const image = config.instance.sandbox.image ?? "nest:latest";
+
+    // Look for Dockerfile in workspace first, fall back to nest's own
+    const dockerfilePaths = [
+        join(ws.path, "Dockerfile"),
+        join(new URL(".", import.meta.url).pathname, "..", "Dockerfile"),
+    ];
+    const dockerfile = dockerfilePaths.find((p) => existsSync(p));
+    if (!dockerfile) {
+        console.error("Error: no Dockerfile found");
+        process.exit(1);
+    }
+
+    const context = dirname(dockerfile);
+    console.log(`Building image "${image}" from ${dockerfile}`);
+
+    const result = spawnSync("docker", ["build", "-t", image, "-f", dockerfile, context], {
         stdio: "inherit",
     });
 
-    docker.on("exit", (code) => {
-        process.exit(code ?? 0);
-    });
-
-    docker.on("error", (err) => {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-            console.error("Error: docker not found. Install Docker to use sandbox mode.");
-        } else {
-            console.error(`Error: ${err.message}`);
-        }
+    if (result.status !== 0) {
+        console.error("Build failed.");
         process.exit(1);
+    }
+
+    console.log(`\nImage "${image}" built successfully.`);
+}
+
+async function cmdRebuild(args: ParsedArgs): Promise<void> {
+    // Stop (if running) → build → start
+    const ws = resolveWorkspace(args.workspace);
+    if (!ws) {
+        console.error(args.workspace
+            ? `Error: workspace "${args.workspace}" not found`
+            : "Error: no workspace found");
+        process.exit(1);
+    }
+
+    const { loadConfig } = await import("./config.js");
+    const configPath = join(ws.path, "config.yaml");
+    const config = loadConfig(configPath);
+    const containerName = `nest-${config.instance?.name ?? "default"}`;
+
+    // Stop if running
+    const check = spawnSync("docker", ["inspect", "--format", "{{.State.Status}}", containerName], {
+        encoding: "utf-8",
     });
+    if (check.status === 0) {
+        console.log(`Stopping "${containerName}"...`);
+        spawnSync("docker", ["stop", containerName], { stdio: "inherit" });
+        spawnSync("docker", ["rm", containerName], { stdio: "inherit" });
+    }
+
+    // Build
+    await cmdBuild(args);
+
+    // Start
+    console.log();
+    await cmdStart(args);
 }
 
 async function startBareMetal(
@@ -631,6 +776,15 @@ async function main() {
             break;
         case "start":
             await cmdStart(args);
+            break;
+        case "stop":
+            await cmdStop(args);
+            break;
+        case "build":
+            await cmdBuild(args);
+            break;
+        case "rebuild":
+            await cmdRebuild(args);
             break;
         case "attach":
             await cmdAttach(args);
