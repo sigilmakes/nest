@@ -1,0 +1,6 @@
+{
+    "type": "module",
+    "dependencies": {
+        "discord.js": "^13.17.1"
+    }
+}
