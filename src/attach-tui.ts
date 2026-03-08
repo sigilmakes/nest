@@ -193,11 +193,9 @@ export function startTui(ws: WebSocket, workspaceName: string): void {
 
         switch (msg.type) {
             case "stream":
-                handleText(msg.text ?? "");
-                break;
             case "text":
-                // Final response — finalize any streaming
-                lastResponseIdx = -1;
+                // Both stream and final text update the current response in-place.
+                // If lastResponseIdx is set, replace; otherwise create new entry.
                 handleText(msg.text ?? "");
                 break;
             case "tool_start":
