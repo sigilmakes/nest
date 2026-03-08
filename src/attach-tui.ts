@@ -16,6 +16,7 @@ import {
     Editor, matchesKey, Key,
 } from "@mariozechner/pi-tui";
 import type { MarkdownTheme, EditorTheme } from "@mariozechner/pi-tui";
+import { execSync } from "node:child_process";
 import WebSocket from "ws";
 
 // ─── Theme ──────────────────────────────────────────────────
@@ -72,10 +73,19 @@ interface ChatMessage {
 
 // ─── TUI ────────────────────────────────────────────────────
 
+function generateBanner(name: string): string | null {
+    try {
+        return execSync(`figlet -f "ANSI Shadow" "${name}"`, { encoding: "utf-8", timeout: 2000 }).trimEnd();
+    } catch {
+        return null;
+    }
+}
+
 export function startTui(ws: WebSocket, workspaceName: string): void {
     const terminal = new ProcessTerminal();
     const tui = new TUI(terminal, true);
     const messages: ChatMessage[] = [];
+    const banner = generateBanner(workspaceName);
 
     // Message area
     const messageArea = new Container();
@@ -137,8 +147,13 @@ export function startTui(ws: WebSocket, workspaceName: string): void {
     function rebuildMessages(): void {
         messageArea.clear();
 
+        // Banner
+        if (banner) {
+            messageArea.addChild(new Text(`${CYAN}${banner}${R}`, 1, 1));
+        }
+
         if (messages.length === 0) {
-            messageArea.addChild(new Text(`${DIM}Connected to ${workspaceName}. Type a message.${R}`, 1, 1));
+            messageArea.addChild(new Text(`${DIM}Type a message. /q to disconnect.${R}`, 1, 0));
             return;
         }
 
