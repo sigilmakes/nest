@@ -6,33 +6,95 @@ Nest does five things: manages pi sessions, loads plugins, runs cron jobs, handl
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────┐
-│               NEST KERNEL                │
-│                                          │
-│  Bridge  SessionMgr  Config  Scheduler   │
-│  PluginLoader  HTTP Skeleton  Tracker    │
-│  Core Commands: status, reboot, abort    │
-│                                          │
-└──────────┬───────────────────────────────┘
-           │ NestAPI
-┌──────────┴───────────────────────────────┐
-│               PLUGINS                    │
-│                                          │
-│  discord.ts   matrix.ts   dashboard.ts   │
-│  webhook.ts   commands.ts   your-own.ts  │
-│                                          │
-└──────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph Kernel["NEST KERNEL"]
+        Bridge["Bridge\n(pi RPC)"]
+        SM["Session Manager"]
+        Sched["Scheduler\n(cron)"]
+        Config["Config\n(YAML)"]
+        PL["Plugin Loader"]
+        HTTP["HTTP Server\n(skeleton)"]
+        Tracker["Usage Tracker"]
+        Core["Core Commands\nstatus · reboot · abort"]
+    end
+
+    subgraph Plugins["PLUGINS"]
+        Discord["discord.ts"]
+        Matrix["matrix.ts"]
+        Dashboard["dashboard.ts"]
+        Webhook["webhook.ts"]
+        Commands["commands.ts"]
+        Custom["your-plugin.ts"]
+    end
+
+    PL -- "NestAPI" --> Plugins
+    Bridge <--> Pi["pi process"]
+
+    style Kernel fill:#e8edf5,stroke:#3c5a99
+    style Plugins fill:#fff5eb,stroke:#aa6633
+    style Custom fill:#ffe0c0,stroke:#cc7722,stroke-dasharray: 5 5
+    style Pi fill:#dcf5dc,stroke:#449944
 ```
 
 ## Sessions
 
 Sessions are the central concept. Everything else attaches to them.
 
+```mermaid
+graph TB
+    subgraph S1["Session: wren"]
+        Pi1["pi process"]
+    end
+    subgraph S2["Session: background"]
+        Pi2["pi process"]
+    end
+
+    D["Discord\n#general"] -->|attached| S1
+    CLI["CLI\nterminal"] -->|attached| S1
+    Cron1["Cron\nmorning"] -->|targets| S1
+    Cron2["Cron\ndream"] -->|targets| S2
+
+    S1 -. "broadcasts to\nall attached" .-> D
+    S1 -. "broadcasts to\nall attached" .-> CLI
+
+    style S1 fill:#ddeeff,stroke:#3c7fbb
+    style S2 fill:#ddeeff,stroke:#3c7fbb
+    style D fill:#fff0e0,stroke:#aa6633
+    style CLI fill:#fff0e0,stroke:#aa6633
+    style Cron1 fill:#e8f5e8,stroke:#558855
+    style Cron2 fill:#e8f5e8,stroke:#558855
+```
+
 - **Sessions are independent pi processes** with their own conversation history
 - **Listeners attach to sessions** — Discord, CLI, webhook are all views into a session
 - **Multiple listeners on one session** — CLI and Discord both see the same conversation
 - **Cron jobs target sessions** — no notify channels, output goes to all attached listeners
+
+## Message Flow
+
+```mermaid
+sequenceDiagram
+    participant P as Platform
+    participant L as Listener Plugin
+    participant MW as Middleware
+    participant K as Kernel
+    participant B as Bridge
+    participant Pi as pi
+
+    P->>L: User message
+    L->>MW: IncomingMessage
+    MW->>K: process(msg)
+    K->>B: sendMessage()
+    B->>Pi: JSON-RPC
+    Pi-->>B: streaming response
+    B-->>K: response text
+    K-->>L: broadcast to ALL<br/>attached listeners
+    L-->>P: Display
+
+    Note over MW: Can block<br/>(return null)
+    Note over K,L: All listeners on<br/>the session see output
+```
 
 ## Plugins
 
