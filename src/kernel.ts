@@ -820,6 +820,9 @@ export class Kernel {
         // Typing indicator
         const typingInterval = this.startTyping(listener, origin);
 
+        // Track the active origin so block protocol uploads and other
+        // API-initiated broadcasts can route back to the right channel.
+        this.sessionManager.setActiveOrigin(sessionName, origin);
         const activityStart = Date.now();
 
         try {
@@ -844,6 +847,7 @@ export class Kernel {
         } finally {
             this.recordActivity(msg, Date.now() - activityStart);
             clearInterval(typingInterval);
+            this.sessionManager.setActiveOrigin(sessionName, null);
         }
     }
 

@@ -30,6 +30,8 @@ export interface SessionInfo {
     idleTimer: ReturnType<typeof setTimeout> | null;
     lastActivity: number;
     listeners: ListenerBinding[];
+    /** The origin of the message currently being processed, if any. */
+    activeOrigin: MessageOrigin | null;
 }
 
 /**
@@ -61,6 +63,7 @@ export class SessionManager extends EventEmitter {
                 idleTimer: null,
                 lastActivity: 0,
                 listeners: [],
+                activeOrigin: null,
             });
         }
     }
@@ -237,6 +240,15 @@ export class SessionManager extends EventEmitter {
         return this.defaultSession;
     }
 
+    setActiveOrigin(name: string, origin: MessageOrigin | null): void {
+        const info = this.sessions.get(name);
+        if (info) info.activeOrigin = origin;
+    }
+
+    getActiveOrigin(name: string): MessageOrigin | null {
+        return this.sessions.get(name)?.activeOrigin ?? null;
+    }
+
     recordActivity(name: string): void {
         const info = this.sessions.get(name);
         if (info) {
@@ -293,6 +305,10 @@ export class SessionManager extends EventEmitter {
         kind?: "text" | "tool" | "stream",
         blocks?: Block[],
     ): Promise<void> {
+        // If no explicit replyOrigin, check if the session has an active origin
+        // (set by handleMessage while processing a user message).
+        const effectiveOrigin = replyOrigin ?? this.getActiveOrigin(sessionName);
+
         const bindings = this.getListeners(sessionName);
         for (const { listener, origin } of bindings) {
             // Only deliver stream deltas to listeners that opted in.
@@ -304,13 +320,13 @@ export class SessionManager extends EventEmitter {
             // (e.g. CLI message → Discord listener with channel "*").
             let resolvedOrigin = origin;
             if (origin.channel === "*") {
-                if (replyOrigin && replyOrigin.platform === origin.platform) {
-                    resolvedOrigin = replyOrigin;
-                } else if (replyOrigin) {
+                if (effectiveOrigin && effectiveOrigin.platform === origin.platform) {
+                    resolvedOrigin = effectiveOrigin;
+                } else if (effectiveOrigin) {
                     // Different platform — can't resolve wildcard, skip
                     continue;
                 } else {
-                    // No replyOrigin (block protocol, cron, etc.) — fall back to notifyOrigin
+                    // No origin at all (cron, etc.) — fall back to notifyOrigin
                     const notify = listener.notifyOrigin?.();
                     if (notify) {
                         resolvedOrigin = notify;
