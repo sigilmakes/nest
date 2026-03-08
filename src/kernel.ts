@@ -84,6 +84,7 @@ export class Kernel {
             registerCommand: (name, cmd) => kernel.commands.set(name, cmd),
             registerRoute: (method, path, handler) => kernel.httpServer?.route(method, path, handler),
             registerPrefixRoute: (method, prefix, handler) => kernel.httpServer?.prefixRoute(method, prefix, handler),
+            registerUpgrade: (path, handler) => kernel.httpServer?.onUpgrade(path, handler),
 
             on: (event: string, handler: (...args: any[]) => void) => kernel.events.on(event, handler),
 

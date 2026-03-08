@@ -20,7 +20,7 @@
 import { dirname, resolve, join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 
 // ─── Workspace Registry ─────────────────────────────────────
 
@@ -430,8 +430,8 @@ async function startBareMetal(
 }
 
 async function cmdAttach(args: ParsedArgs): Promise<void> {
-    const ws = resolveWorkspace(args.workspace);
-    if (!ws) {
+    const workspace = resolveWorkspace(args.workspace);
+    if (!workspace) {
         console.error(args.workspace
             ? `Error: workspace "${args.workspace}" not found`
             : "Error: no workspace found");
@@ -440,108 +440,156 @@ async function cmdAttach(args: ParsedArgs): Promise<void> {
     }
 
     const { loadConfigRaw } = await import("./config.js");
-    const configPath = join(ws.path, "config.yaml");
+    const configPath = join(workspace.path, "config.yaml");
     const config = loadConfigRaw(configPath);
 
-    // Resolve which nest session to attach to
-    const sessionNames = Object.keys(config.sessions);
-    const sessionName = args.session ?? config.defaultSession ?? sessionNames[0];
+    if (!config.server) {
+        console.error("Error: no server configured — nest attach requires server.port and server.token");
+        process.exit(1);
+    }
 
-    let sessionConfig = config.sessions[sessionName];
+    const port = config.server.port;
+    const host = config.attach?.host ?? "127.0.0.1";
+    const token = process.env.SERVER_TOKEN ?? config.server.token;
+    const username = process.env.USER ?? "cli";
 
-    // If the session doesn't exist, create it using the default session's config
-    if (!sessionConfig) {
-        const defaultName = config.defaultSession ?? sessionNames[0];
-        const defaultConfig = config.sessions[defaultName];
-        if (!defaultConfig) {
-            console.error(`Error: no sessions configured`);
+    // Resolve token from .env file if it's an env: reference
+    let resolvedToken = token;
+    if (typeof token === "string" && token.startsWith("env:")) {
+        const envName = token.slice(4);
+        resolvedToken = process.env[envName] ?? "";
+        if (!resolvedToken) {
+            // Try loading from .env in workspace
+            const envPath = join(workspace.path, ".env");
+            if (existsSync(envPath)) {
+                const envFile = readFileSync(envPath, "utf-8");
+                const match = envFile.match(new RegExp(`^${envName}=(.+)$`, "m"));
+                if (match) resolvedToken = match[1].trim();
+            }
+        }
+        if (!resolvedToken) {
+            console.error(`Error: environment variable ${envName} not set`);
             process.exit(1);
         }
-
-        sessionConfig = { ...defaultConfig };
-        console.log(`Creating new session "${sessionName}" (based on "${defaultName}")`);
     }
 
-    // For Docker deployments, config paths are container-side (e.g. /home/wren).
-    // attach.hostHome maps the container HOME to the host path so we can rewrite
-    // pi.cwd and agentDir for the local TUI process.
-    const attachConfig = config.attach;
-    const hostHome = attachConfig?.hostHome;
+    const wsUrl = `ws://${host}:${port}/cli`;
+    console.log(`Connecting to ${wsUrl}...`);
 
-    const rewrite = (containerPath: string): string => {
-        if (!hostHome) return containerPath;
-        // Find the container home by looking at pi.cwd (e.g. /home/wren)
-        const containerHome = sessionConfig.pi.cwd;
-        if (containerPath.startsWith(containerHome)) {
-            return hostHome + containerPath.slice(containerHome.length);
-        }
-        return containerPath;
-    };
+    const { default: WebSocket } = await import("ws");
+    const { createInterface } = await import("node:readline");
 
-    const cwd = hostHome ?? sessionConfig.pi.cwd;
-    const agentDir = sessionConfig.pi.agentDir ?? config.instance?.agentDir;
-    const agentDirResolved = agentDir ? resolve(rewrite(agentDir)) : undefined;
+    const ws = new WebSocket(wsUrl);
+    let connected = false;
 
-    // --session-dir matches what the kernel passes, so CLI and kernel
-    // share the same conversation directory for a given session name.
-    const sessionDir = agentDirResolved
-        ? join(agentDirResolved, "sessions", sessionName)
-        : undefined;
-    if (sessionDir) {
-        mkdirSync(sessionDir, { recursive: true });
-    }
-
-    const piArgs = ["--continue"];
-    if (sessionDir) {
-        piArgs.push("--session-dir", sessionDir);
-    }
-
-    // Add extensions (rewrite paths for host)
-    if (sessionConfig.pi.extensions) {
-        for (const ext of sessionConfig.pi.extensions) {
-            piArgs.push("-e", rewrite(ext));
-        }
-    }
-
-    // Build env
-    const env: Record<string, string | undefined> = { ...process.env };
-    if (hostHome) {
-        env.HOME = hostHome;
-    }
-    if (attachConfig?.env) {
-        Object.assign(env, attachConfig.env);
-    }
-    if (agentDirResolved) {
-        env.PI_CODING_AGENT_DIR = agentDirResolved;
-    }
-
-    console.log(`Attaching to session "${sessionName}"`);
-    console.log(`  cwd: ${cwd}`);
-    if (agentDirResolved) {
-        console.log(`  agent dir: ${agentDirResolved}`);
-    }
-    console.log(`  Use /new or /resume in the TUI to manage conversations`);
-    console.log();
-
-    // Spawn pi in interactive mode with inherited stdio (full TUI)
-    const pi = spawn("pi", piArgs, {
-        cwd,
-        env,
-        stdio: "inherit",
+    ws.on("open", () => {
+        ws.send(JSON.stringify({ type: "auth", token: resolvedToken, username }));
     });
 
-    pi.on("exit", (code) => {
-        process.exit(code ?? 0);
+    ws.on("message", (rawData) => {
+        let msg: any;
+        try { msg = JSON.parse(rawData.toString()); } catch { return; }
+
+        switch (msg.type) {
+            case "auth_ok":
+                connected = true;
+                console.log(`\x1b[32m✓\x1b[0m Connected to nest (${workspace.name ?? workspace.path})`);
+                console.log(`  Type a message to send to the session. Ctrl+C to disconnect.\n`);
+                startRepl();
+                break;
+
+            case "auth_fail":
+                console.error("Authentication failed");
+                process.exit(1);
+                break;
+
+            case "text":
+                if (msg.text) {
+                    // Clear the current prompt line, print response, restore prompt
+                    process.stdout.write("\r\x1b[K");
+                    console.log(`\x1b[36mwren\x1b[0m: ${msg.text}`);
+                    if (rl) rl.prompt();
+                }
+                break;
+
+            case "tool_start":
+                process.stdout.write("\r\x1b[K");
+                console.log(`\x1b[33m⚙ ${msg.tool ?? "tool"}\x1b[0m ${msg.args ? JSON.stringify(msg.args).slice(0, 120) : ""}`);
+                if (rl) rl.prompt();
+                break;
+
+            case "files":
+                process.stdout.write("\r\x1b[K");
+                for (const f of msg.files ?? []) {
+                    console.log(`\x1b[35m📎 ${f.filename}\x1b[0m (${f.size} bytes)`);
+                }
+                if (rl) rl.prompt();
+                break;
+
+            case "typing":
+                // Could show a spinner, but keep it simple
+                break;
+
+            case "system":
+                process.stdout.write("\r\x1b[K");
+                console.log(`\x1b[90m${msg.text}\x1b[0m`);
+                if (rl) rl.prompt();
+                break;
+
+            case "error":
+                process.stdout.write("\r\x1b[K");
+                console.error(`\x1b[31m✗ ${msg.text}\x1b[0m`);
+                if (rl) rl.prompt();
+                break;
+        }
     });
 
-    pi.on("error", (err) => {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-            console.error("Error: pi not found. Install pi: npm install -g @mariozechner/pi-coding-agent");
+    ws.on("close", (code, reason) => {
+        if (connected) {
+            console.log(`\nDisconnected (${code}: ${reason || "closed"})`);
+        }
+        process.exit(0);
+    });
+
+    ws.on("error", (err) => {
+        if (!connected) {
+            console.error(`Failed to connect to ${wsUrl}`);
+            console.error("Is the nest server running? Check: docker ps");
         } else {
-            console.error(`Error spawning pi: ${err.message}`);
+            console.error(`WebSocket error: ${err.message}`);
         }
         process.exit(1);
     });
+
+    let rl: import("node:readline").Interface | null = null;
+
+    function startRepl() {
+        rl = createInterface({
+            input: process.stdin,
+            output: process.stdout,
+            prompt: "\x1b[32m> \x1b[0m",
+        });
+
+        rl.prompt();
+
+        rl.on("line", (line) => {
+            const text = line.trim();
+            if (!text) {
+                rl!.prompt();
+                return;
+            }
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "message", text }));
+            } else {
+                console.error("Not connected");
+            }
+            rl!.prompt();
+        });
+
+        rl.on("close", () => {
+            ws.close();
+        });
+    }
 }
 
 async function cmdStatus(args: ParsedArgs): Promise<void> {

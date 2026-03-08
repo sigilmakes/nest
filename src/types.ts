@@ -131,11 +131,8 @@ export interface TrackingConfig {
 // This type exists only so the kernel can detect sandbox mode.
 
 export interface AttachConfig {
-    /** Host-side path that maps to the container's HOME (e.g. /home/shared/wren/home).
-     *  Used to rewrite container paths (pi.cwd, agentDir) for `nest attach`. */
-    hostHome?: string;
-    /** Extra env vars for the pi process. */
-    env?: Record<string, string>;
+    /** Host to connect to for `nest attach` WebSocket. Default: 127.0.0.1 */
+    host?: string;
 }
 
 export interface InstanceConfig {
@@ -223,6 +220,7 @@ export interface NestAPI {
     registerCommand(name: string, command: Command): void;
     registerRoute(method: string, path: string, handler: RouteHandler): void;
     registerPrefixRoute(method: string, prefix: string, handler: RouteHandler): void;
+    registerUpgrade(path: string, handler: (req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => void): void;
 
     // Lifecycle events
     on(event: "message_in", handler: (msg: IncomingMessage) => void): void;

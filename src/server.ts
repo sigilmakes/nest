@@ -39,6 +39,7 @@ export class HttpServer {
     private wsClientCounter = 0;
     private wsRateLimits = new Map<string, number[]>();
     private wsHandler?: WsRpcHandler;
+    private upgradeHandlers = new Map<string, (req: IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => void>();
     private authRateLimits = new Map<string, number[]>();
     private sessions = new Map<string, { createdAt: number }>();
 
@@ -113,6 +114,10 @@ export class HttpServer {
         for (const [, client] of this.wsClients) {
             if (client.readyState === WebSocket.OPEN) client.send(data);
         }
+    }
+
+    onUpgrade(path: string, handler: (req: IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => void): void {
+        this.upgradeHandlers.set(path, handler);
     }
 
     sendToClient(clientId: string, event: any): void {
@@ -207,6 +212,14 @@ export class HttpServer {
 
     private handleUpgrade(req: IncomingMessage, socket: import("node:stream").Duplex, head: Buffer): void {
         const url = new URL(req.url ?? "/", "http://localhost");
+
+        // Check plugin upgrade handlers first
+        const pluginHandler = this.upgradeHandlers.get(url.pathname);
+        if (pluginHandler) {
+            pluginHandler(req, socket, head);
+            return;
+        }
+
         if (url.pathname !== "/ws") {
             socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
             socket.destroy();
