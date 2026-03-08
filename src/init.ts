@@ -1138,10 +1138,10 @@ function writeOutput(state: WizardState): void {
     const pluginsDir = join(configDir, "plugins");
     mkdirSync(pluginsDir, { recursive: true });
 
-    const pluginsToCopy: string[] = ["commands.ts", "dashboard.ts"];
+    const pluginsToCopy: string[] = ["commands.ts"];
+    if (state.enableServer) pluginsToCopy.push("cli.ts", "dashboard.ts", "webhook.ts");
     if (state.enableDiscord) pluginsToCopy.push("discord.ts");
     if (state.enableMatrix) pluginsToCopy.push("matrix.ts");
-    if (state.enableServer) pluginsToCopy.push("webhook.ts");
 
     for (const plugin of pluginsToCopy) {
         const src = join(PLUGINS_SOURCE, plugin);
