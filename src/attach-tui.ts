@@ -13,7 +13,7 @@
 
 import {
     ProcessTerminal, TUI, Container, Text, Spacer, Markdown,
-    Editor, matchesKey, Key, visibleWidth,
+    Editor, matchesKey, Key, truncateToWidth,
 } from "@mariozechner/pi-tui";
 import type { MarkdownTheme, EditorTheme } from "@mariozechner/pi-tui";
 import figlet from "figlet";
@@ -190,11 +190,15 @@ export function startTui(ws: WebSocket, workspaceName: string): void {
     function rebuildMessages(): void {
         messageArea.clear();
 
-        // Banner — render as pre-formatted lines
+        // Banner — raw pre-formatted lines (no word wrap)
         if (banner) {
-            for (const line of banner) {
-                messageArea.addChild(new Text(line, 1, 0));
-            }
+            const bannerComponent = {
+                render(width: number): string[] {
+                    return banner.map((line) => " " + truncateToWidth(line, width - 1));
+                },
+                invalidate(): void {},
+            };
+            messageArea.addChild(bannerComponent as any);
             messageArea.addChild(new Spacer(1));
         }
 

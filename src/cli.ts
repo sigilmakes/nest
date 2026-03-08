@@ -60,7 +60,11 @@ function resolveWorkspace(nameOrPath?: string): { path: string; name?: string } 
         // Try current directory first
         const cwd = process.cwd();
         if (existsSync(join(cwd, "config.yaml"))) {
-            return { path: cwd };
+            // Check if cwd matches a registered workspace
+            const registry = loadRegistry();
+            const resolvedCwd = resolve(cwd);
+            const match = Object.entries(registry.workspaces).find(([, p]) => resolve(p) === resolvedCwd);
+            return { path: cwd, name: match?.[0] };
         }
 
         // Try default workspace from registry
