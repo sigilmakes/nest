@@ -2,7 +2,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventEmitter } from "node:events";
 import { Bridge } from "./bridge.js";
-import type { ImageContent } from "./bridge.js";
+
 import { SessionManager } from "./session-manager.js";
 import { Tracker } from "./tracker.js";
 import { HttpServer } from "./server.js";
@@ -15,7 +15,7 @@ import type {
 } from "./types.js";
 import * as logger from "./logger.js";
 import { cleanupInbox, saveToInbox } from "./inbox.js";
-import { compressImage } from "./image.js";
+
 
 /**
  * Minimal multipart/form-data parser. Handles text fields and binary file parts.
@@ -792,7 +792,7 @@ export class Kernel {
         }
 
         // Process attachments
-        const { images, fileLines } = await this.processAttachments(msg.attachments);
+        const fileLines = await this.processAttachments(msg.attachments);
 
         let promptText = `[${msg.platform} ${msg.channel}] ${msg.sender}: ${msg.text}`;
         if (fileLines.length > 0) promptText += "\n" + fileLines.join("\n");
@@ -827,7 +827,6 @@ export class Kernel {
 
         try {
             const response = await bridge.sendMessage(promptText, {
-                images: images.length > 0 ? images : undefined,
                 onToolStart: (info) => {
                     const summary = formatToolCall(info);
                     this.sessionManager.broadcast(sessionName, summary, undefined, origin, "tool").catch(() => {});
@@ -895,30 +894,20 @@ export class Kernel {
         });
     }
 
-    private async processAttachments(attachments?: Attachment[]): Promise<{ images: ImageContent[]; fileLines: string[] }> {
-        const images: ImageContent[] = [];
+    private async processAttachments(attachments?: Attachment[]): Promise<string[]> {
         const fileLines: string[] = [];
-        if (!attachments?.length) return { images, fileLines };
+        if (!attachments?.length) return fileLines;
 
         cleanupInbox().catch(() => {});
 
         for (const att of attachments) {
-            if (att.base64 && att.contentType.startsWith("image/")) {
-                const compressed = att.data ? await compressImage(att.data, att.contentType) : null;
-                if (compressed && !compressed.ok) {
-                    fileLines.push(`[${compressed.reason}]`);
-                } else if (compressed?.ok) {
-                    images.push({ type: "image", data: compressed.base64, mimeType: compressed.mimeType });
-                } else {
-                    images.push({ type: "image", data: att.base64, mimeType: att.contentType });
-                }
-            } else if (att.data) {
+            if (att.data) {
                 const saved = await saveToInbox(att.filename, att.data);
                 if (saved) fileLines.push(`[Attached file: ${saved} (${att.contentType}, ${att.size} bytes)]`);
             }
         }
 
-        return { images, fileLines };
+        return fileLines;
     }
 
     private startTyping(listener: Listener | undefined, origin: MessageOrigin): ReturnType<typeof setInterval> {

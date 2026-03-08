@@ -64,17 +64,13 @@ class DiscordListener implements Listener {
                 const data = await downloadAttachment(att.url, MAX_ATTACHMENT_SIZE);
                 if (!data) continue;
 
-                const attachment: Attachment = {
+                attachments.push({
                     url: att.url,
                     filename: att.name ?? "attachment",
                     contentType,
                     size: data.length,
                     data,
-                };
-                if (contentType.startsWith("image/")) {
-                    attachment.base64 = data.toString("base64");
-                }
-                attachments.push(attachment);
+                });
             }
 
             this.messageHandler({
