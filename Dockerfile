@@ -36,4 +36,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8484/health || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["node", "dist/main.js", "/config/config.yaml"]
+CMD ["node", "dist/cli.js", "start", "--config", "/config/config.yaml"]

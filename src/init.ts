@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * nest init — interactive setup wizard
  *
@@ -897,10 +896,15 @@ function writeOutput(state: WizardState): void {
     }
 }
 
-// ─── Main ───────────────────────────────────────────────────
+// ─── Exported Wizard ────────────────────────────────────────
 
-async function main() {
-    console.clear();
+export interface InitResult {
+    sessionName: string;
+    workDir: string;
+    agentDir: string;
+}
+
+export async function runInitWizard(): Promise<InitResult | null> {
     p.intro("🪺 nest init");
 
     // Check for existing config
@@ -913,7 +917,7 @@ async function main() {
         );
         if (!overwrite) {
             p.cancel("Keeping existing config.");
-            process.exit(0);
+            return null;
         }
     }
 
@@ -984,10 +988,11 @@ async function main() {
 
     p.note(summaryLines.join("\n"), "Setup complete");
 
-    p.outro("Start nest: npm run dev");
-}
+    p.outro("Start with: nest start");
 
-main().catch((err) => {
-    console.error(err);
-    process.exit(1);
-});
+    return {
+        sessionName: session.name,
+        workDir,
+        agentDir,
+    };
+}

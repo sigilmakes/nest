@@ -334,17 +334,35 @@ discord:
         "123456": "wren"
 ```
 
-## Setup
+## Quick Start
 
 ```bash
 npm install
-npm run init    # interactive setup wizard
+nest init                    # setup wizard — creates workspace
+nest start                   # start gateway
 ```
 
-The wizard walks through:
+## CLI
+
+```bash
+nest init [path]             # create workspace (full setup wizard)
+nest start                   # start gateway from current directory
+nest attach                  # attach pi TUI to a running session
+nest status                  # show workspace info
+nest list                    # list known workspaces
+
+# Options
+nest -w wren start           # start a named workspace
+nest -w wren attach          # attach TUI to default session
+nest -w wren -s bg attach    # attach TUI to specific session
+```
+
+### Workspaces
+
+A workspace is a directory containing `config.yaml`, `plugins/`, and `.nest/`. The `nest init` wizard walks through the full setup:
 
 1. **Workspace** — working directory for pi
-2. **Model provider** — pick from Anthropic, OpenAI, Google, Bedrock, OpenRouter, Groq, xAI, Mistral, or custom OpenAI-compatible. Writes `~/.pi/agent/models.json`
+2. **Model provider** — Anthropic, OpenAI, Google, Bedrock, OpenRouter, Groq, xAI, Mistral, or custom OpenAI-compatible
 3. **Session** — name and pi extensions
 4. **Chat platforms** — Discord and/or Matrix with token + channel mapping
 5. **HTTP server** — port and auto-generated auth token
@@ -352,15 +370,22 @@ The wizard walks through:
 
 Output: `config.yaml`, `.nest/models.json`, seeded `plugins/` directory.
 
-Nest uses its own agent directory (default `.nest/`) for `models.json`, sessions, and settings — it never touches `~/.pi/agent/`. This means you can run pi standalone alongside nest without config conflicts. The isolation is handled via `PI_CODING_AGENT_DIR` which nest sets when spawning pi processes.
+Workspaces are registered in `~/.nest/workspaces.json` so you can reference them by name from anywhere.
 
-Supports all pi backends: Anthropic, OpenAI, Google Gemini, Google Vertex AI, Amazon Bedrock, Azure OpenAI, OpenRouter, Groq, xAI, Mistral, and any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio).
+### Pi Isolation
 
-## Running
+Nest uses its own agent directory (default `.nest/`) for `models.json`, sessions, and settings — it **never touches `~/.pi/agent/`**. You can run pi standalone alongside nest without config conflicts. The isolation is handled via `PI_CODING_AGENT_DIR` which nest sets when spawning pi processes.
+
+### Attach
+
+`nest attach` spawns pi in interactive TUI mode, pointed at the same session files as the running gateway. Both the gateway and the attached pi share the same conversation history. This gives you a full terminal interface while the gateway handles Discord/Matrix/webhooks.
 
 ```bash
-npm run dev              # tsx src/main.ts
-npm run dev config.yaml  # custom config path
+# Attach to default session of workspace "wren"
+nest -w wren attach
+
+# Attach to a specific session
+nest -w wren -s background attach
 ```
 
 ## Writing Plugins
@@ -377,8 +402,8 @@ The agent can write plugins too — that's the point.
 ```
 nest/
 ├── src/                    # Kernel (~3,200 lines)
-│   ├── main.ts             # Entry point
-│   ├── init.ts             # Setup wizard (nest init)
+│   ├── cli.ts              # CLI entry point (nest init/start/attach/status/list)
+│   ├── init.ts             # Setup wizard
 │   ├── kernel.ts           # Core orchestration
 │   ├── bridge.ts           # RPC pipe to pi
 │   ├── session-manager.ts  # Sessions (central hub)

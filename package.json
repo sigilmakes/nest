@@ -8,11 +8,14 @@
     "engines": {
         "node": ">=22.0.0"
     },
+    "bin": {
+        "nest": "./dist/cli.js"
+    },
     "scripts": {
         "build": "tsc",
-        "dev": "tsx src/main.ts",
-        "init": "tsx src/init.ts",
-        "start": "node dist/main.js",
+        "nest": "tsx src/cli.ts",
+        "dev": "tsx src/cli.ts start",
+        "start": "node dist/cli.js start",
         "test": "vitest run",
         "test:watch": "vitest"
     },
