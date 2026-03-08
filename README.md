@@ -389,6 +389,40 @@ Workspaces are registered in `~/.nest/workspaces.json` so you can reference them
 
 Each workspace has its own `.pi/agent/` directory for `models.json`, sessions, and settings — it **never touches `~/.pi/agent/`**. You can run pi standalone alongside nest without config conflicts. Nest sets `PI_CODING_AGENT_DIR` when spawning pi processes.
 
+### Sandbox
+
+Enable Docker sandboxing per workspace for filesystem isolation. Nix is available inside the container so the agent can install arbitrary dependencies declaratively.
+
+```yaml
+# config.yaml
+instance:
+    name: wren
+    sandbox:
+        enabled: true
+        image: "nest:latest"
+```
+
+When `sandbox.enabled` is true, `nest start` transparently spawns a Docker container instead of running bare-metal:
+
+- Workspace dir bind-mounted at `/workspace` (config, plugins, cron, .pi/agent/)
+- Agent's working directory bind-mounted at its original path
+- `PI_CODING_AGENT_DIR` set to `/workspace/.pi/agent`
+- Host networking by default (override with `sandbox.network`)
+- Nix available — agent can `nix-env -iA nixpkgs.foo` for any dependency
+
+```yaml
+# Full sandbox options
+instance:
+    sandbox:
+        enabled: true
+        image: "nest:latest"
+        network: "host"
+        extraMounts:
+            - "/data/shared:/shared:ro"
+        extraEnv:
+            SOME_VAR: "value"
+```
+
 ### Attach
 
 `nest attach` spawns pi in interactive TUI mode, pointed at the same session files as the running gateway. Both the gateway and the attached pi share the same conversation history.

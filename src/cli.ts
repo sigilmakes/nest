@@ -227,6 +227,96 @@ async function cmdStart(args: ParsedArgs): Promise<void> {
     }
 
     const configPath = args.config ?? join(ws.path, "config.yaml");
+
+    // Peek at config to check sandbox mode
+    const { loadConfig } = await import("./config.js");
+    const config = loadConfig(configPath);
+
+    if (config.instance?.sandbox?.enabled) {
+        await startSandboxed(ws, config);
+    } else {
+        await startBareMetal(ws, configPath);
+    }
+}
+
+async function startSandboxed(
+    ws: { path: string; name?: string },
+    config: import("./types.js").Config,
+): Promise<void> {
+    const sandbox = config.instance!.sandbox!;
+    const image = sandbox.image ?? "nest:latest";
+    const containerName = `nest-${config.instance?.name ?? "default"}`;
+
+    // Resolve the agent cwd from the first session
+    const firstSession = Object.values(config.sessions)[0];
+    const agentCwd = firstSession?.pi.cwd ?? "/home";
+
+    console.log(`Starting sandboxed workspace "${ws.name ?? ws.path}"`);
+    console.log(`  Image:     ${image}`);
+    console.log(`  Container: ${containerName}`);
+    console.log(`  Workspace: ${ws.path}`);
+    console.log();
+
+    // Build docker run args
+    const dockerArgs = [
+        "run", "--rm", "-it",
+        "--name", containerName,
+        // Bind-mount the workspace directory
+        "-v", `${ws.path}:/workspace`,
+        // Bind-mount the agent's working directory
+        "-v", `${agentCwd}:${agentCwd}`,
+        // Set pi agent dir to the workspace's .pi/agent/
+        "-e", `PI_CODING_AGENT_DIR=/workspace/.pi/agent`,
+        // Network mode
+        `--network=${sandbox.network ?? "host"}`,
+    ];
+
+    // Extra mounts from config
+    if (sandbox.extraMounts) {
+        for (const mount of sandbox.extraMounts) {
+            dockerArgs.push("-v", mount);
+        }
+    }
+
+    // Extra env vars from config
+    if (sandbox.extraEnv) {
+        for (const [key, val] of Object.entries(sandbox.extraEnv)) {
+            dockerArgs.push("-e", `${key}=${val}`);
+        }
+    }
+
+    // Forward server port if configured
+    if (config.server && sandbox.network !== "host") {
+        const port = config.server.port;
+        const host = config.server.host ?? "127.0.0.1";
+        dockerArgs.push("-p", `${host}:${port}:${port}`);
+    }
+
+    // Image and command
+    dockerArgs.push(image, "node", "dist/cli.js", "start", "--config", "/workspace/config.yaml");
+
+    const docker = spawn("docker", dockerArgs, {
+        stdio: "inherit",
+    });
+
+    docker.on("exit", (code) => {
+        process.exit(code ?? 0);
+    });
+
+    docker.on("error", (err) => {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+            console.error("Error: docker not found. Install Docker to use sandbox mode.");
+        } else {
+            console.error(`Error: ${err.message}`);
+        }
+        process.exit(1);
+    });
+}
+
+async function startBareMetal(
+    ws: { path: string; name?: string },
+    configPath: string,
+): Promise<void> {
     process.chdir(ws.path);
 
     if (ws.name) {

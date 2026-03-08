@@ -122,11 +122,20 @@ export interface TrackingConfig {
     retentionDays?: number;
 }
 
+export interface SandboxConfig {
+    enabled: boolean;
+    image?: string;          // docker image (default: "nest:latest")
+    network?: string;        // docker network mode (default: "host")
+    extraMounts?: string[];  // additional -v mounts
+    extraEnv?: Record<string, string>;
+}
+
 export interface InstanceConfig {
     name: string;
     dataDir?: string;
     pluginsDir?: string;
     agentDir?: string;
+    sandbox?: SandboxConfig;
 }
 
 export interface Config {

@@ -1,15 +1,21 @@
 # ─── Nest Config ────────────────────────────────────────────
-# Run `npm run init` to generate this interactively.
+# Run `nest init` to generate this interactively.
 
 instance:
     name: "default"
     dataDir: "."
     pluginsDir: "./plugins"
     agentDir: "./.pi/agent"    # pi config (models, sessions) — isolated from ~/.pi/agent/
+    # sandbox:
+    #     enabled: true
+    #     image: "nest:latest"
+    #     network: "host"
+    #     extraMounts:
+    #         - "/data/shared:/shared:ro"
+    #     extraEnv:
+    #         SOME_VAR: "value"
 
 # ─── Sessions ───────────────────────────────────────────────
-# Sessions are independent pi processes. Listeners attach to them.
-# Cron jobs target them. Multiple listeners can watch the same session.
 
 sessions:
     default:
@@ -17,10 +23,6 @@ sessions:
             cwd: /home/user
             # extensions:
             #     - /path/to/extension.ts
-    # background:
-    #     pi:
-    #         cwd: /home/user
-    #     idleTimeoutMinutes: 30
 
 defaultSession: default
 

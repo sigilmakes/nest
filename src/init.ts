@@ -314,18 +314,27 @@ interface WizardState {
     serverToken?: string;
     enableCron: boolean;
     cronDir: string;
+    enableSandbox: boolean;
+    sandboxImage: string;
 }
 
 function buildConfig(state: WizardState): Record<string, unknown> {
     const config: Record<string, unknown> = {};
 
     // Instance
-    config.instance = {
+    const instance: Record<string, unknown> = {
         name: state.instanceName,
         dataDir: ".",
         pluginsDir: "./plugins",
         agentDir: "./.pi/agent",
     };
+    if (state.enableSandbox) {
+        instance.sandbox = {
+            enabled: true,
+            image: state.sandboxImage,
+        };
+    }
+    config.instance = instance;
 
     // Sessions
     const sessionConfig: Record<string, unknown> = {
@@ -831,6 +840,26 @@ async function stepCron(): Promise<{ enable: boolean; dir: string }> {
     return { enable, dir };
 }
 
+async function stepSandbox(): Promise<{ enable: boolean; image: string }> {
+    const enable = guard(
+        await p.confirm({
+            message: "Run in Docker sandbox? (isolates filesystem, nix available for deps)",
+            initialValue: false,
+        }),
+    );
+
+    if (!enable) return { enable: false, image: "" };
+
+    const image = guard(
+        await p.text({
+            message: "Docker image",
+            initialValue: "nest:latest",
+        }),
+    );
+
+    return { enable, image };
+}
+
 // ─── Output ─────────────────────────────────────────────────
 
 function writeOutput(state: WizardState): void {
@@ -967,6 +996,10 @@ export async function runInitWizard(nameHint?: string): Promise<InitResult | nul
     p.log.step("Cron Scheduler");
     const cron = await stepCron();
 
+    // Step 8: Sandbox
+    p.log.step("Sandbox");
+    const sandbox = await stepSandbox();
+
     // Write everything to ~/.nest/<name>/
     process.chdir(nestDir);
 
@@ -986,6 +1019,8 @@ export async function runInitWizard(nameHint?: string): Promise<InitResult | nul
         serverToken: server.token,
         enableCron: cron.enable,
         cronDir: cron.dir,
+        enableSandbox: sandbox.enable,
+        sandboxImage: sandbox.image,
     };
 
     p.log.step("Writing configuration");
@@ -1011,6 +1046,11 @@ export async function runInitWizard(nameHint?: string): Promise<InitResult | nul
     }
     if (cron.enable) {
         summaryLines.push(`Cron:      ${cron.dir}`);
+    }
+    if (sandbox.enable) {
+        summaryLines.push(`Sandbox:   Docker (${sandbox.image})`);
+    } else {
+        summaryLines.push(`Sandbox:   none (bare-metal)`);
     }
 
     p.note(summaryLines.join("\n"), "Setup complete");
