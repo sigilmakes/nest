@@ -5,3 +5,4 @@ config.yaml
 home/
 public/
 scratchpad
+node_modules
